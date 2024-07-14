@@ -10,4 +10,4 @@ __requirePath__ = "requiremtents.txt" # 项目依赖文件
 __license__ = "MIT" # 项目许可证
 __supportsPython__ = [3] # 项目支持的python版本
 __readmePath__ = "README.md" # 项目说明文件
-__githubURL__ = "https://www.github.com/KOKOMI12345" # 项目的github地址
+__githubURL__ = "https://www.github.com/KOKOMI12345/FuxuanTracer" # 项目的github地址

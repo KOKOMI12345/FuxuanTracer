@@ -21,7 +21,6 @@ class IpProtocol:
     ARP = 0x0806
     MPLS = 0x8847
     VLAN = 0x8100
-    # IP协议中的协议号
     TCP = 6
     UDP = 17
 
@@ -31,6 +30,7 @@ class PortProtocol:
     端口协议
     """
     HTTP = 80
+    HTTP_PROXY = 8080
     HTTPS = 443
     FTP = 21
     MYSQL = 3306
@@ -43,6 +43,25 @@ class PortProtocol:
     KAFKA = 9092
     ELASTICSEARCH = 9200
     SYSTEM_PORT_RANGE = range(0, 1024)
+
+    @classmethod
+    def get_protocol_name(cls, port) -> str:
+        protocol_map = {
+            cls.HTTP: "HTTP",
+            cls.HTTPS: "HTTPS",
+            cls.FTP: "FTP",
+            cls.MYSQL: "MYSQL",
+            cls.SSL: "SSL",
+            cls.SSH: "SSH",
+            cls.SMTP: "SMTP",
+            cls.REDIS: "REDIS",
+            cls.MONGODB: "MONGODB",
+            cls.RABBITMQ: "RABBITMQ",
+            cls.KAFKA: "KAFKA",
+            cls.ELASTICSEARCH: "ELASTICSEARCH",
+        }
+
+        return protocol_map.get(port, "Unknown")
 
     @classmethod
     def is_system_port(cls, port):

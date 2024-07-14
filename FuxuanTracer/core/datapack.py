@@ -1,6 +1,6 @@
 from FuxuanTracer.utils.dataPackCatcher import DataPackCatcher
-from FuxuanTracer.dependecy.needModules import struct
-from FuxuanTracer.utils.Protocol import IpProtocol
+from FuxuanTracer.dependecy.needModules import struct , sys
+from FuxuanTracer.utils.Protocol import IpProtocol , PortProtocol
 from FuxuanTracer.utils.logger import logger
 
 
@@ -40,7 +40,7 @@ class DataPackAnalyzer:
         etherType = struct.unpack('!H', frame[12:14])[0]
         return dst_mac, src_mac, etherType, frame[14:]
 
-    def __parse_IPV4_header(self, header):
+    def __parse_IPV4_header(self, header)-> dict[str,str]:
         """
         解析IPv4头部
         """
@@ -89,6 +89,17 @@ class DataPackAnalyzer:
         格式化IPv6地址
         """
         return ':'.join(f'{address[i]:02x}{address[i+1]:02x}' for i in range(0, 16, 2))
+    
+    def __isWhatProtocol(self, content: tuple) -> str:
+        """
+        判断是什么协议
+        """
+        constants = {key: value for key, value in PortProtocol.__dict__.items() if not callable(value)}
+        keys = list(constants.keys()) # 协议名
+        values = list(constants.values()) # 协议端口
+        if content[0] in values: return keys[values.index(content[0])]
+        elif content[1] in values: return keys[values.index(content[1])]
+        else: return "未知"
 
     def parse_tcp_header(self, header):
         """
@@ -122,26 +133,29 @@ class DataPackAnalyzer:
             result_string = f"以太网帧: \n目的MAC: {self.__format_mac(dst_mac)}\n源MAC: {self.__format_mac(src_mac)}\n以太类型: {hex(etherType)}\n"
 
             if etherType == IpProtocol.IPV4:
-                ipv4_header = self.__parse_IPV4_header(payload[:20])
+                ipv_header_length = (payload[0] & 0x0F) * 4
+                ipv4_header = self.__parse_IPV4_header(payload[:ipv_header_length])
                 result_string += f"IPv4头部: {ipv4_header}\n"
                 result_string += f"源IP: {ipv4_header['source_address']}\n"
                 result_string += f"目的IP: {ipv4_header['destination_address']}\n"
-                if ipv4_header['protocol'] == IpProtocol.TCP:
-                    tcp_header = self.parse_tcp_header(payload[ipv4_header['ihl']*4:])
-                    result_string += f"TCP头部: {tcp_header}\n"
-                elif ipv4_header['protocol'] == IpProtocol.UDP:
-                    udp_header = self.parse_udp_header(payload[ipv4_header['ihl']*4:])
-                    result_string += f"UDP头部: {udp_header}\n"
             elif etherType == IpProtocol.IPV6:
                 ipv6_header = self.__parse_IPV6_header(payload[:40])
                 result_string += f"IPv6头部: {ipv6_header}\n"
                 result_string += f"源IP: {ipv6_header['source_address']}\n"
                 result_string += f"目的IP: {ipv6_header['destination_address']}\n"
-                if ipv6_header['next_header'] == IpProtocol.TCP:
-                    tcp_header = self.parse_tcp_header(payload[40:])
+
+            if etherType in [IpProtocol.IPV4, IpProtocol.IPV6]:
+                protocol = None
+                if etherType == IpProtocol.IPV4: protocol = ipv4_header['protocol']
+                elif etherType == IpProtocol.IPV6: protocol = ipv6_header['next_header']
+                if protocol == IpProtocol.TCP: 
+                    tcp_payload = payload[ipv_header_length:]
+                    tcp_header = self.parse_tcp_header(tcp_payload)
+                    result_string += f"使用的协议: {self.__isWhatProtocol(tcp_header[:2])}\n"
                     result_string += f"TCP头部: {tcp_header}\n"
-                elif ipv6_header['next_header'] == IpProtocol.UDP:
-                    udp_header = self.parse_udp_header(payload[40:])
+                elif protocol == IpProtocol.UDP:
+                    udp_payload = payload[ipv_header_length:]
+                    udp_header = self.parse_udp_header(udp_payload)
                     result_string += f"UDP头部: {udp_header}\n"
 
             return result_string
