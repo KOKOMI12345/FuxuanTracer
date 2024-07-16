@@ -1,6 +1,7 @@
 from FuxuanTracer.utils.dataPackCatcher import DataPackCatcher
-from FuxuanTracer.dependecy.needModules import struct , sys , Union
+from FuxuanTracer.dependecy.needModules import struct , sys , Union , Optional
 from FuxuanTracer.utils.Protocol import IpProtocol , PortProtocol
+from FuxuanTracer.utils.excformat import ExtractException
 from FuxuanTracer.utils.dataPakResult import DatapackResult
 from FuxuanTracer.utils.logger import logger
 
@@ -12,6 +13,28 @@ class DataPackAnalyzer:
         self.deviceAvaliable = self.cacher.deviceDict
         self.cached_dataPaks = []
         self.result: list[str] = []
+        self.filterd_result = []
+        self.filter_rules: dict[str, Union[str,range,Union[list[int],list[str]]]] = {
+            "WebProtocol": "all",
+            "Port": "all",
+            "StreamProtocol": "all"
+        }
+
+    def setFilter(self,WebProtocol: str = "all", Port: Union[str,range,list[int]] = "all", StreamProtocol: str = "all"):
+        self.filter_rules["WebProtocol"] = WebProtocol # 比如 HTTP , HTTPS 之类的
+        if isinstance(Port, range): self.filter_rules["Port"] = Port
+        elif isinstance(Port, list): self.filter_rules["Port"] = Port
+        elif isinstance(Port, str): self.filter_rules["Port"] = Port
+        else: self.logger.error(f"端口过滤器格式错误,请检查")
+        self.filter_rules["StreamProtocol"] = StreamProtocol # 定义流协议，比如TCP, UDP 之类的
+
+    def __applayFilter(self, result: DatapackResult,json_fmt: bool = False) -> Optional[str]:
+        # 这里判断条件满不满足,满足就原封不动的返回,不满足就reutrn
+        if result.WebProtocol and result.transport_header and result.ether_frame and result.ip_header:
+            if self.filter_rules["WebProtocol"] != "all" and result.WebProtocol != self.filter_rules["WebProtocol"]:return
+            elif self.filter_rules["StreamProtocol"] != "all" and result.transport_header["protocol"] not in self.filter_rules["StreamProtocol"]:return
+            elif self.filter_rules["Port"] != "all" and (result.transport_header["header"]["dst_port"] not in self.filter_rules["Port"] and result.transport_header["header"]["src_port"] not in self.filter_rules["Port"]):return
+            else:return str(result) if not json_fmt else result.to_json()
 
     def getAvaliableDevice(self):
         return self.deviceAvaliable
@@ -124,7 +147,7 @@ class DataPackAnalyzer:
     def hex_to_bytes(self, hex_str):
         return bytes.fromhex(hex_str.replace(' ', ''))
 
-    def analyze_packet(self, packet_hex: str,json_fmt: bool = False):
+    def analyze_packet(self, packet_hex: str,json_fmt: bool = False,use_filter: bool = False):
         """
         分析单个数据包
         """
@@ -178,7 +201,6 @@ class DataPackAnalyzer:
                 result.set_ip_header(None, None, None, None, None, None, None, None, None, None, None, None, None)
                 protocol = None
 
-            transport_string = ""
             if etherType in [IpProtocol.IPV4, IpProtocol.IPV6] and protocol is not None:
                 if protocol == IpProtocol.TCP:
                     header_length = ipv_header_length if etherType == IpProtocol.IPV4 else 40
@@ -206,35 +228,55 @@ class DataPackAnalyzer:
                         'length': length,
                         'checksum': checksum
                     })
-
-
-            return str(result) if not json_fmt else result.to_json()
+                if use_filter:return self.__applayFilter(result,json_fmt)
+                else:return str(result) if not json_fmt else result.to_json()
 
         except Exception as e:
-            self.logger.error(f"分析数据包时出错: {str(e)}")
+            exctype , value , tb = sys.exc_info()
+            errno_stack = ExtractException(exctype, value, tb)
+            logger.error(f"解析数据包异常：{errno_stack}")
             return ""
 
-    def __format_mac(self, mac):
+    def __format_mac(self, mac: bytes):
         """
         格式化MAC地址
         """
         return ':'.join(f'{b:02x}' for b in mac)
 
-    def analyze_packets(self, write_to_file: bool = False, file_path: str = "result.txt",json_fmt: bool = False):
+    def analyze_packets(self, write_to_file: bool = False, file_path: str = "result.txt", json_fmt: bool = False, use_filter: bool = True):
         """
         分析已捕获的数据包
         """
-        self.logger.info("开始分析数据包")
-        self.result.clear()  # 清除之前的分析结果
-        for packet in self.cached_dataPaks:
-            packet_analysis = self.analyze_packet(packet,json_fmt)
-            self.result.append(packet_analysis)
+        if use_filter:
+            self.logger.info("开始分析数据包(使用过滤器)")
+            result_to_analyze = self.filterd_result  # 使用筛选结果容器
+        else:
+            self.logger.info("开始分析数据包")
+            result_to_analyze = self.result  # 使用普通结果容器
 
+        result_to_analyze.clear()  # 清除之前的分析结果
+
+        for packet in self.cached_dataPaks:
+            packet_analysis = self.analyze_packet(packet, json_fmt, use_filter=use_filter)
+
+            # 添加到对应的结果容器中
+            if isinstance(packet_analysis, str):
+                result_to_analyze.append(packet_analysis)
+
+        # 将结果写入文件，如果写入文件模式启用
         if write_to_file:
             with open(file_path, "w", encoding='utf-8') as file:
-                for index, analysis in enumerate(self.result, start=1):
-                    file.write(f"抓获的第 {index} 个数据包\n")
+                for index, analysis in enumerate(result_to_analyze, start=1):
+                    if use_filter:file.write(f"符合条件的第 {index} 个数据包\n")
+                    else:file.write(f"抓获的第 {index} 个数据包\n")
+
                     file.write(analysis)
                     file.write("\n-------------------------------------------\n")
+        else:
+            for index, analysis in enumerate(result_to_analyze, start=1):
+                if use_filter:print(f"符合条件的第 {index} 个数据包")
+                else:print(f"抓获的第 {index} 个数据包")
 
+                print(analysis)
+                print("-------------------------------------------\n")
         self.logger.info("数据包分析完成")

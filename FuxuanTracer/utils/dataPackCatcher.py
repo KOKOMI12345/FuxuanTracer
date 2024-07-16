@@ -24,11 +24,12 @@ class DataPackCatcher:
     @logger.catch
     def capture_packets(self, pcap_handle, packet_count: int) -> list[str]:
         result = []
+
         def packet_handler(userdata, pkthdr_ptr, pkt_data_ptr):
             pkthdr = pkthdr_ptr.contents
             pkt_data = ctypes.string_at(pkt_data_ptr, pkthdr.caplen)
-            logger.info(f"Packet captured: length={pkthdr.len}, captured length={pkthdr.caplen}")
             result.append(pkt_data.hex())
+            logger.info(f"Packet captured: length={pkthdr.len}, captured length={pkthdr.caplen}")
 
         PACKET_HANDLER = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.POINTER(pcap_pkthdr), ctypes.POINTER(ctypes.c_ubyte))
         packet_handler_cb = PACKET_HANDLER(packet_handler)
@@ -38,9 +39,9 @@ class DataPackCatcher:
 
         if self.dll.pcap_loop(pcap_handle, packet_count, packet_handler_cb, None) == -1:
             raise RuntimeError("Error occurred during packet capture")
-        
+
         return result
     
-    @logger.catch(message="an error has occurred during closing device")
+    @logger.catch(message="An error occurred during closing device")
     def close_device(self, pcap_handle):
         self.dll.pcap_close(pcap_handle)

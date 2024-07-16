@@ -8,7 +8,7 @@ import socket
 import loguru , time
 import os , sys
 import ctypes , platform , subprocess
-from typing import Union
+from typing import Union , Optional
 import struct
 from rich.progress import track
 from OpenSSL import SSL , crypto
