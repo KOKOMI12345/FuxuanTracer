@@ -1,5 +1,6 @@
 from FuxuanTracer.utils.dataPackCatcher import DataPackCatcher
-from FuxuanTracer.dependecy.needModules import struct , sys , Union , Optional
+from FuxuanTracer.dependecy.needModules import struct , sys , Union , Optional , asyncio , Callable
+
 from FuxuanTracer.utils.Protocol import IpProtocol , PortProtocol
 from FuxuanTracer.utils.excformat import ExtractException
 from FuxuanTracer.utils.dataPakResult import DatapackResult
@@ -13,6 +14,7 @@ class DataPackAnalyzer:
         self.deviceAvaliable = self.cacher.deviceDict
         self.cached_dataPaks = []
         self.result: list[str] = []
+        self.async_result: asyncio.Queue = asyncio.Queue()
         self.filterd_result = []
         self.filter_rules: dict[str, Union[str,range,Union[list[int],list[str]]]] = {
             "WebProtocol": "all",
@@ -20,13 +22,16 @@ class DataPackAnalyzer:
             "StreamProtocol": "all"
         }
 
-    def setFilter(self,WebProtocol: str = "all", Port: Union[str,range,list[int]] = "all", StreamProtocol: str = "all"):
+    def setFilter(self,WebProtocol: str = "all", Port: Union[str,range,list[int]] = "all", StreamProtocol: str = "all", **kwargs):
         self.filter_rules["WebProtocol"] = WebProtocol # 比如 HTTP , HTTPS 之类的
         if isinstance(Port, range): self.filter_rules["Port"] = Port
         elif isinstance(Port, list): self.filter_rules["Port"] = Port
         elif isinstance(Port, str): self.filter_rules["Port"] = Port
         else: self.logger.error(f"端口过滤器格式错误,请检查")
         self.filter_rules["StreamProtocol"] = StreamProtocol # 定义流协议，比如TCP, UDP 之类的
+        if kwargs:
+            for key, value in kwargs.items():
+                self.filter_rules[key] = value
 
     def __applayFilter(self, result: DatapackResult,json_fmt: bool = False) -> Optional[str]:
         # 这里判断条件满不满足,满足就原封不动的返回,不满足就reutrn
@@ -38,8 +43,64 @@ class DataPackAnalyzer:
 
     def getAvaliableDevice(self):
         return self.deviceAvaliable
+    
+    async def __asyncAnylazer(self, packet: str, json_fmt: bool = False, use_filter: bool = True):
+        """ 异步分析数据包 """
+        return await asyncio.to_thread(self.analyze_packet,packet,json_fmt,use_filter)
+    
+    async def __AsyncCatch(self, use_device: str = "",callback: Optional[Callable] = None):
+        """
+        异步捕获数据包
+        说实话我有点担心这个会一直new一个task然后导致线程太多
+        """
+        self.logger.info(f"开始捕获数据包")
+        if use_device not in self.deviceAvaliable:
+            self.logger.error(f"设备 {use_device} 不存在")
+            return
+        if use_device:
+            self.logger.info(f"使用设备 {use_device}")
+            try:
+                handler = self.cacher.open_device(use_device)
+                while True:
+                   result = await asyncio.to_thread(self.cacher.capture_packets,handler, 1)
+                   if callback:await callback(result[0])
+                   else:return result[0]
+            except Exception as e:self.logger.error(f"捕获数据包时出错: {str(e)}")
+            except asyncio.exceptions.CancelledError:self.logger.info("捕获数据包被终止")
+            finally:self.cacher.close_device(handler)
 
-    def catchDataPak(self, use_device: str, num_paks: int):
+    async def AsyncProcess(self, 
+        use_device: str = "",
+        write_to_file:bool = True,
+        file_path: str = "result.log",
+        json_fmt: bool = False, 
+        use_filter: bool = True,
+        enqueue: bool = False
+    ):
+        # 异步循环捕获数据包,直到用户按下ctrl+c
+        results = []
+        if enqueue:
+            await self.__AsyncCatch(use_device,self.async_result.put)
+            while self.async_result.qsize():
+                try:
+                    packet = self.async_result.get_nowait()
+                    result = await self.__asyncAnylazer(packet,json_fmt,use_filter)
+                    results.append(result) # 添加到结果列表中
+                except asyncio.QueueEmpty:pass
+        else:
+            packet_data = await self.__AsyncCatch(use_device)
+            result = await self.__asyncAnylazer(packet_data,json_fmt,use_filter) # type: ignore
+            results.append(result)
+        if write_to_file:
+            with open(file_path,"w",encoding="utf-8") as file:
+                for index , packet_result in enumerate(results,start=1):
+                    if use_filter:file.write(f"符合条件的第 {index} 个数据包\n")
+                    else:file.write(f"抓获的第 {index} 个数据包\n")
+                    if isinstance(packet_result,str):file.write(packet_result)
+                    file.write("\n-------------------------------------------\n")
+
+
+    def catchDataPak(self, use_device: str, num_paks: int = None): # type: ignore
         self.logger.info(f"开始捕获 {num_paks} 个数据包")
         if use_device not in self.deviceAvaliable:
             self.logger.error(f"设备 {use_device} 不存在")

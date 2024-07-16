@@ -37,9 +37,7 @@ class DataPackCatcher:
         self.dll.pcap_loop.restype = ctypes.c_int
         self.dll.pcap_loop.argtypes = [ctypes.c_void_p, ctypes.c_int, PACKET_HANDLER, ctypes.c_void_p]
 
-        if self.dll.pcap_loop(pcap_handle, packet_count, packet_handler_cb, None) == -1:
-            raise RuntimeError("Error occurred during packet capture")
-
+        if self.dll.pcap_loop(pcap_handle, packet_count, packet_handler_cb, None) == -1:pass
         return result
     
     @logger.catch(message="An error occurred during closing device")
