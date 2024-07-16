@@ -25,5 +25,9 @@ choose_divice =  devices[4]
 ins.catchDataPak(choose_divice, 10)
 
 # 解析抓取的包
-ins.analyze_packets(True,"result.log")
+ins.analyze_packets(True,"result.log",False)
+args:
+- 1. True ,代表写入文件
+- 2. result.log , 写入文件的文件名
+- 3. False , 代表不用json格式写入文件
 ```

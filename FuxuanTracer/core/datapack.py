@@ -1,6 +1,7 @@
 from FuxuanTracer.utils.dataPackCatcher import DataPackCatcher
-from FuxuanTracer.dependecy.needModules import struct , sys
+from FuxuanTracer.dependecy.needModules import struct , sys , Union
 from FuxuanTracer.utils.Protocol import IpProtocol , PortProtocol
+from FuxuanTracer.utils.dataPakResult import DatapackResult
 from FuxuanTracer.utils.logger import logger
 
 
@@ -10,12 +11,12 @@ class DataPackAnalyzer:
         self.cacher = DataPackCatcher()
         self.deviceAvaliable = self.cacher.deviceDict
         self.cached_dataPaks = []
-        self.result = []
+        self.result: list[str] = []
 
     def getAvaliableDevice(self):
         return self.deviceAvaliable
 
-    def catchDataPak(self, use_device: str, num_paks: int = 10):
+    def catchDataPak(self, use_device: str, num_paks: int):
         self.logger.info(f"开始捕获 {num_paks} 个数据包")
         if use_device not in self.deviceAvaliable:
             self.logger.error(f"设备 {use_device} 不存在")
@@ -90,7 +91,7 @@ class DataPackAnalyzer:
         """
         return ':'.join(f'{address[i]:02x}{address[i+1]:02x}' for i in range(0, 16, 2))
     
-    def __isWhatProtocol(self, content: tuple) -> str:
+    def __isWhatProtocol(self, content: tuple[int,int]) -> str:
         """
         判断是什么协议
         """
@@ -99,7 +100,7 @@ class DataPackAnalyzer:
         values = list(constants.values()) # 协议端口
         if content[0] in values: return keys[values.index(content[0])]
         elif content[1] in values: return keys[values.index(content[1])]
-        else: return "未知"
+        else: return "UNKNOW"
 
     def parse_tcp_header(self, header):
         """
@@ -123,42 +124,92 @@ class DataPackAnalyzer:
     def hex_to_bytes(self, hex_str):
         return bytes.fromhex(hex_str.replace(' ', ''))
 
-    def analyze_packet(self, packet_hex):
+    def analyze_packet(self, packet_hex: str,json_fmt: bool = False):
         """
         分析单个数据包
         """
         try:
             packet_bytes = self.hex_to_bytes(packet_hex)
             dst_mac, src_mac, etherType, payload = self.__parse_ethernet_frame(packet_bytes)
-            result_string = f"以太网帧: \n目的MAC: {self.__format_mac(dst_mac)}\n源MAC: {self.__format_mac(src_mac)}\n以太类型: {hex(etherType)}\n"
+            result = DatapackResult()
+            # 设置以太网帧信息
+            result.set_ether_frame(self.__format_mac(dst_mac),self.__format_mac(src_mac),etherType)
 
             if etherType == IpProtocol.IPV4:
                 ipv_header_length = (payload[0] & 0x0F) * 4
                 ipv4_header = self.__parse_IPV4_header(payload[:ipv_header_length])
-                result_string += f"IPv4头部: {ipv4_header}\n"
-                result_string += f"源IP: {ipv4_header['source_address']}\n"
-                result_string += f"目的IP: {ipv4_header['destination_address']}\n"
+                result.set_ip_header(
+                    ipv4_header['version'],
+                    ipv4_header['ihl'],
+                    ipv4_header['dscp'],
+                    ipv4_header['ecn'],
+                    ipv4_header['total_length'],
+                    ipv4_header['identification'],
+                    ipv4_header['flags'],
+                    ipv4_header['fragment_offset'],
+                    ipv4_header['ttl'],
+                    ipv4_header['protocol'],
+                    ipv4_header['header_checksum'],
+                    ipv4_header['source_address'],
+                    ipv4_header['destination_address']
+                )
+                protocol = ipv4_header['protocol']
+
             elif etherType == IpProtocol.IPV6:
                 ipv6_header = self.__parse_IPV6_header(payload[:40])
-                result_string += f"IPv6头部: {ipv6_header}\n"
-                result_string += f"源IP: {ipv6_header['source_address']}\n"
-                result_string += f"目的IP: {ipv6_header['destination_address']}\n"
+                result.set_ip_header(
+                    ipv6_header['version'],
+                    None,  # IPv6没有IHL字段
+                    None,  # IPv6没有DSCP字段
+                    None,  # IPv6没有ECN字段
+                    None,  # IPv6没有总长度字段
+                    None,  # IPv6没有标识字段
+                    None,  # IPv6没有标志字段
+                    None,  # IPv6没有片偏移字段
+                    ipv6_header['hop_limit'],  # IPv6使用TTL字段
+                    ipv6_header['next_header'],  # IPv6使用next_header字段
+                    None,  # IPv6没有头部校验和字段
+                    ipv6_header['source_address'],
+                    ipv6_header['destination_address']
+                )
+                protocol = ipv6_header['next_header']
 
-            if etherType in [IpProtocol.IPV4, IpProtocol.IPV6]:
+            else:
+                result.set_ip_header(None, None, None, None, None, None, None, None, None, None, None, None, None)
                 protocol = None
-                if etherType == IpProtocol.IPV4: protocol = ipv4_header['protocol']
-                elif etherType == IpProtocol.IPV6: protocol = ipv6_header['next_header']
-                if protocol == IpProtocol.TCP: 
-                    tcp_payload = payload[ipv_header_length:]
-                    tcp_header = self.parse_tcp_header(tcp_payload)
-                    result_string += f"使用的协议: {self.__isWhatProtocol(tcp_header[:2])}\n"
-                    result_string += f"TCP头部: {tcp_header}\n"
-                elif protocol == IpProtocol.UDP:
-                    udp_payload = payload[ipv_header_length:]
-                    udp_header = self.parse_udp_header(udp_payload)
-                    result_string += f"UDP头部: {udp_header}\n"
 
-            return result_string
+            transport_string = ""
+            if etherType in [IpProtocol.IPV4, IpProtocol.IPV6] and protocol is not None:
+                if protocol == IpProtocol.TCP:
+                    header_length = ipv_header_length if etherType == IpProtocol.IPV4 else 40
+                    tcp_payload = payload[header_length:]
+                    src_port, dst_port, seq_num, ack_num, data_offset, flags, window_size, tcp_payload = self.parse_tcp_header(tcp_payload)
+                    result.set_webProtocol(self.__isWhatProtocol((src_port, dst_port)))
+                    result.set_transport_header("TCP", {
+                        'src_port': src_port,
+                        'dst_port': dst_port,
+                        'seq_num': seq_num,
+                        'ack_num': ack_num,
+                        'data_offset': data_offset,
+                        'flags': flags,
+                        'window_size': window_size,
+                        'tcp_payload': tcp_payload
+                    })
+                elif protocol == IpProtocol.UDP:
+                    header_length = ipv_header_length if etherType == IpProtocol.IPV4 else 40
+                    udp_payload = payload[header_length:]
+                    src_port, dst_port, length, checksum = self.parse_udp_header(udp_payload)
+                    result.set_webProtocol(self.__isWhatProtocol((src_port, dst_port)))
+                    result.set_transport_header("UDP", {
+                        'src_port': src_port,
+                        'dst_port': dst_port,
+                        'length': length,
+                        'checksum': checksum
+                    })
+
+
+            return str(result) if not json_fmt else result.to_json()
+
         except Exception as e:
             self.logger.error(f"分析数据包时出错: {str(e)}")
             return ""
@@ -169,14 +220,14 @@ class DataPackAnalyzer:
         """
         return ':'.join(f'{b:02x}' for b in mac)
 
-    def analyze_packets(self, write_to_file: bool = False, file_path: str = "result.txt"):
+    def analyze_packets(self, write_to_file: bool = False, file_path: str = "result.txt",json_fmt: bool = False):
         """
         分析已捕获的数据包
         """
         self.logger.info("开始分析数据包")
         self.result.clear()  # 清除之前的分析结果
         for packet in self.cached_dataPaks:
-            packet_analysis = self.analyze_packet(packet)
+            packet_analysis = self.analyze_packet(packet,json_fmt)
             self.result.append(packet_analysis)
 
         if write_to_file:
@@ -187,15 +238,3 @@ class DataPackAnalyzer:
                     file.write("\n-------------------------------------------\n")
 
         self.logger.info("数据包分析完成")
-
-if __name__ == "__main__":
-    try:
-        analyzer = DataPackAnalyzer()
-        devices = analyzer.getAvaliableDevice()
-        print("可用设备:", devices)
-        if devices:
-            first_device = list(devices.keys())[1]  # 选择第一个网络设备
-            analyzer.catchDataPak(first_device, 10)
-            analyzer.analyze_packets(write_to_file=True, file_path="result.log")
-    except Exception as e:
-        logger.error(f"运行时出错: {str(e)}")

@@ -22,7 +22,7 @@ class DataPackCatcher:
         return pcap_handle
     
     @logger.catch
-    def capture_packets(self, pcap_handle, packet_count: int = 10) -> list[str]:
+    def capture_packets(self, pcap_handle, packet_count: int) -> list[str]:
         result = []
         def packet_handler(userdata, pkthdr_ptr, pkt_data_ptr):
             pkthdr = pkthdr_ptr.contents
@@ -44,16 +44,3 @@ class DataPackCatcher:
     @logger.catch(message="an error has occurred during closing device")
     def close_device(self, pcap_handle):
         self.dll.pcap_close(pcap_handle)
-
-if __name__ == "__main__":
-    try:
-        dataCatcher = DataPackCatcher()
-        devices = dataCatcher.deviceDict
-        print("Available devices:", devices)
-        if devices:
-            first_device = list(devices.keys())[1]  # Choose the first network device
-            handler = dataCatcher.open_device(first_device)
-            print(f"Capturing packets on {first_device}...")
-            dataCatcher.capture_packets(handler)
-    except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")

@@ -87,7 +87,6 @@ class PortScanner:
         for port in ProcessTrack(self.ranges, description="扫描端口中..."):
             try:
                 self.socket.connect((host, port))
-                self._send_test_msg(host, port)
                 self.result[port] = "open"
             except socket.error:
                 self.result[port] = "closed"
