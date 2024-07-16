@@ -3,7 +3,7 @@
   项目元数据
 """
 
-__version__ = "0.0.1-beta" # 版本号
+__version__ = "0.0.1" # 版本号
 __author__ = "符玄" # 开发者(Github)
 __packageName__ = "FuxuanTracer" # 项目名称
 __requirePath__ = "requiremtents.txt" # 项目依赖文件
