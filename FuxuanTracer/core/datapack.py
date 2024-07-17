@@ -1,6 +1,11 @@
 from FuxuanTracer.utils.dataPackCatcher import DataPackCatcher
-from FuxuanTracer.dependecy.needModules import struct , sys , Union , Optional , asyncio , Callable
-
+from FuxuanTracer.dependecy.needModules import (struct ,
+    sys , 
+    Union , 
+    Optional , 
+    asyncio , 
+    Callable , datetime , aiofiles
+    )
 from FuxuanTracer.utils.Protocol import IpProtocol , PortProtocol
 from FuxuanTracer.utils.excformat import ExtractException
 from FuxuanTracer.utils.dataPakResult import DatapackResult
@@ -15,6 +20,7 @@ class DataPackAnalyzer:
         self.cached_dataPaks = []
         self.result: list[str] = []
         self.async_result: asyncio.Queue = asyncio.Queue()
+        self.async_lock = asyncio.Lock()
         self.filterd_result = []
         self.filter_rules: dict[str, Union[str,range,Union[list[int],list[str]]]] = {
             "WebProtocol": "all",
@@ -36,9 +42,9 @@ class DataPackAnalyzer:
     def __applayFilter(self, result: DatapackResult,json_fmt: bool = False) -> Optional[str]:
         # 这里判断条件满不满足,满足就原封不动的返回,不满足就reutrn
         if result.WebProtocol and result.transport_header and result.ether_frame and result.ip_header:
-            if self.filter_rules["WebProtocol"] != "all" and result.WebProtocol != self.filter_rules["WebProtocol"]:return
-            elif self.filter_rules["StreamProtocol"] != "all" and result.transport_header["protocol"] not in self.filter_rules["StreamProtocol"]:return
-            elif self.filter_rules["Port"] != "all" and (result.transport_header["header"]["dst_port"] not in self.filter_rules["Port"] and result.transport_header["header"]["src_port"] not in self.filter_rules["Port"]):return
+            if self.filter_rules["WebProtocol"] != "all" and result.WebProtocol != self.filter_rules["WebProtocol"]:return "filted"
+            elif self.filter_rules["StreamProtocol"] != "all" and result.transport_header["protocol"] not in self.filter_rules["StreamProtocol"]:return "filted"
+            elif self.filter_rules["Port"] != "all" and (result.transport_header["header"]["dst_port"] not in self.filter_rules["Port"] and result.transport_header["header"]["src_port"] not in self.filter_rules["Port"]):return "filted"
             else:return str(result) if not json_fmt else result.to_json()
 
     def getAvaliableDevice(self):
@@ -48,26 +54,62 @@ class DataPackAnalyzer:
         """ 异步分析数据包 """
         return await asyncio.to_thread(self.analyze_packet,packet,json_fmt,use_filter)
     
-    async def __AsyncCatch(self, use_device: str = "",callback: Optional[Callable] = None):
+    async def __AsyncCatch(self, use_device: str = "", callback: Optional[Callable] = None, *callbackArgs) -> None:
         """
         异步捕获数据包
-        说实话我有点担心这个会一直new一个task然后导致线程太多
         """
         self.logger.info(f"开始捕获数据包")
+        
         if use_device not in self.deviceAvaliable:
             self.logger.error(f"设备 {use_device} 不存在")
             return
-        if use_device:
-            self.logger.info(f"使用设备 {use_device}")
-            try:
-                handler = self.cacher.open_device(use_device)
-                while True:
-                   result = await asyncio.to_thread(self.cacher.capture_packets,handler, 1)
-                   if callback:await callback(result[0])
-                   else:return result[0]
-            except Exception as e:self.logger.error(f"捕获数据包时出错: {str(e)}")
-            except asyncio.exceptions.CancelledError:self.logger.info("捕获数据包被终止")
-            finally:self.cacher.close_device(handler)
+        
+        self.logger.info(f"使用设备 {use_device}")
+        
+        handler = self.cacher.open_device(use_device)
+        last_result = None
+        
+        try:
+            while True:
+                result = await asyncio.to_thread(self.cacher.capture_packets, handler, 1)
+                current_result = result[0]
+                
+                if current_result != last_result:
+                    if callback and current_result:
+                        await callback(current_result, *callbackArgs)
+                    last_result = current_result
+                else:self.logger.debug("过滤重复数据包")
+                
+        except Exception as e:
+            self.logger.error(f"捕获数据包时出错: {str(e)}")
+            
+        except asyncio.exceptions.CancelledError:
+            self.logger.info("捕获数据包被终止")
+            
+        finally:
+            self.cacher.close_device(handler)
+
+    async def __AsyncWrite(self,
+        result: str,
+        write_to_file: bool = True,
+        file_path: str = "result.log",
+        enqueueMode: bool = True,
+        json_fmt: bool = False,
+        use_filter: bool = True,
+        ):
+            if write_to_file:
+                async with self.async_lock:
+                    with open(file_path,"a+",encoding="utf-8") as file:
+                        if enqueueMode == False:
+                            extract_packet = await self.__asyncAnylazer(result,json_fmt,use_filter)
+                            if extract_packet == "filted" and use_filter:return
+                            if extract_packet and extract_packet != "filted":
+                                file.write(f"数据包: {datetime.now()}\n")
+                                file.write(extract_packet) # type: ignore
+                                file.write("\n-------------------------------------------\n")
+                        elif result:file.write(result)
+            else:print(result)
+               
 
     async def AsyncProcess(self, 
         use_device: str = "",
@@ -77,27 +119,19 @@ class DataPackAnalyzer:
         use_filter: bool = True,
         enqueue: bool = False
     ):
+        """
+        异步循环用于无限抓数据包,适合那种不愿意指定数据包数量,但是又想抓取全部数据包的场景
+        """
         # 异步循环捕获数据包,直到用户按下ctrl+c
-        results = []
         if enqueue:
             await self.__AsyncCatch(use_device,self.async_result.put)
             while self.async_result.qsize():
                 try:
                     packet = self.async_result.get_nowait()
                     result = await self.__asyncAnylazer(packet,json_fmt,use_filter)
-                    results.append(result) # 添加到结果列表中
+                    if result and result != "filted":await self.__AsyncWrite(result,write_to_file,file_path,enqueue,json_fmt,use_filter) # type: ignore
                 except asyncio.QueueEmpty:pass
-        else:
-            packet_data = await self.__AsyncCatch(use_device)
-            result = await self.__asyncAnylazer(packet_data,json_fmt,use_filter) # type: ignore
-            results.append(result)
-        if write_to_file:
-            with open(file_path,"w",encoding="utf-8") as file:
-                for index , packet_result in enumerate(results,start=1):
-                    if use_filter:file.write(f"符合条件的第 {index} 个数据包\n")
-                    else:file.write(f"抓获的第 {index} 个数据包\n")
-                    if isinstance(packet_result,str):file.write(packet_result)
-                    file.write("\n-------------------------------------------\n")
+        else:await self.__AsyncCatch(use_device,self.__AsyncWrite,write_to_file,file_path,enqueue,json_fmt,use_filter)
 
 
     def catchDataPak(self, use_device: str, num_paks: int = None): # type: ignore
@@ -289,7 +323,10 @@ class DataPackAnalyzer:
                         'length': length,
                         'checksum': checksum
                     })
-                if use_filter:return self.__applayFilter(result,json_fmt)
+                if use_filter:
+                    packet_result = self.__applayFilter(result,json_fmt)
+                    if packet_result != "filted":return packet_result
+                    else:return "filted"
                 else:return str(result) if not json_fmt else result.to_json()
 
         except Exception as e:
